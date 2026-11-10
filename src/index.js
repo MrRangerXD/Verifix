@@ -9,6 +9,10 @@ const { registerMessageCreateEvent } = require('./events/messageCreate');
 const { registerInteractionCreateEvent } = require('./events/interactionCreate');
 const oauthRoutes = require('./events/oauthRoutes');
 const db = require('./database');
+const stock = require('./database/stock');
+const health = require('./services/tokenHealth');
+const onliner = require('./services/onliner');
+const brain = require('./services/brain');
 
 const logger = createLogger();
 
@@ -26,6 +30,15 @@ const app = express();
 app.use(express.json());
 app.use('/', oauthRoutes);
 
+// FIX: database.json aur backups HTTP pe leak ho rahe the (saare tokens plaintext)
+const HIDDEN_PATHS = new Set(['/database.json', '/package.json', '/package-lock.json']);
+app.use((req, res, next) => {
+  if (HIDDEN_PATHS.has(req.path) || req.path.startsWith('/backups/')) {
+    return res.status(404).json({ error: 'Route not found' });
+  }
+  return next();
+});
+
 // Serve static files (CSS, JS, images, etc.) from root directory
 app.use(express.static(path.join(__dirname, '..')));
 
@@ -35,11 +48,42 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });
 });
 
+// FIX: loader sirf data.name uthata tha, isliye business.js ke buy/wallet/redeem/myplan
+// aur admin_plan.js ke subcommands kabhi register nahi hote the.
+// Ab ek file se multiple commands export ho sakti hain.
+function isCommand(value) {
+  return Boolean(value && value.data && typeof value.data.name === 'string' && typeof value.execute === 'function');
+}
+
 const commandsPath = path.join(__dirname, 'commands');
-for (const file of fs.readdirSync(commandsPath).filter((file) => file.endsWith('.js'))) {
-  const command = require(path.join(commandsPath, file));
-  if (command.data && command.data.name) {
-    client.commands.set(command.data.name, command);
+for (const file of fs.readdirSync(commandsPath).filter((f) => f.endsWith('.js')).sort()) {
+  let mod;
+  try {
+    mod = require(path.join(commandsPath, file));
+  } catch (error) {
+    logger.error(`Failed to load command ${file}`, error);
+    continue;
+  }
+
+  const candidates = [];
+  if (isCommand(mod)) candidates.push(mod);
+  for (const [key, value] of Object.entries(mod || {})) {
+    if (key === 'data' || key === 'execute') continue;
+    if (isCommand(value)) candidates.push(value);
+  }
+
+  if (!candidates.length) {
+    logger.warn(`No command exported by ${file} — skipped`);
+    continue;
+  }
+
+  for (const command of candidates) {
+    const name = command.data.name;
+    if (client.commands.has(name)) {
+      logger.warn(`Command "${name}" redefined by ${file} (was ${client.commands.get(name).__file})`);
+    }
+    command.__file = file;
+    client.commands.set(name, command);
   }
 }
 
@@ -92,21 +136,41 @@ const server = app.listen(port, host, () => {
   logger.info(`HTTP server listening on ${host}:${port}`);
 });
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  logger.info('SIGTERM signal received: closing HTTP server');
-  server.close(() => {
-    logger.info('HTTP server closed');
-    client.destroy();
-    process.exit(0);
-  });
-});
+health.startHeartbeat(logger);
+onliner.startTokenRotation();
 
-process.on('SIGINT', () => {
-  logger.info('SIGINT signal received: closing HTTP server');
+const brainChannels = () => (process.env.BRAIN_CHANNELS || '').split(',').map((s) => s.trim()).filter(Boolean);
+if (brainChannels().length) {
+  brain.startChatter(brainChannels);
+}
+
+// restore online tokens after restart
+setTimeout(async () => {
+  const limit = Number(process.env.ONLINE_ON_BOOT || 0);
+  if (limit > 0) await onliner.startMany(limit);
+}, 8000);
+
+// FIX: db/index.js apna SIGINT/SIGTERM handler rakhta hai jo turant process.exit karta hai,
+// isliye neeche wale shutdown handlers kabhi chalte hi nahi the aur pending writes flush nahi hote the.
+// prependListener se hum pehle chalte hain.
+function shutdown(signal) {
+  logger.info(`${signal} signal received: closing HTTP server`);
+  try {
+    onliner.stopAll();
+  } catch (error) {
+    logger.error('onliner stopAll failed', error);
+  }
   server.close(() => {
     logger.info('HTTP server closed');
+    try {
+      db.flush();
+    } catch (error) {
+      logger.error('db flush failed', error);
+    }
     client.destroy();
     process.exit(0);
   });
-});
+}
+
+process.prependListener('SIGTERM', () => shutdown('SIGTERM'));
+process.prependListener('SIGINT', () => shutdown('SIGINT'));

