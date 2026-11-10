@@ -57,7 +57,7 @@ module.exports = {
         },
       });
 
-      if (r.added > 0) plans.consume(i.user.id, r.added);
+      if (r.added > 0) plans.addJoins(i.user.id, r.added);
       else plans.refundRun(i.user.id);
 
       await i.editReply({ embeds: [createEmbed({

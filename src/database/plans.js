@@ -144,6 +144,13 @@ function refundRun(userId) {
   db.set(K_PLAN, map);
 }
 
+function addJoins(userId, amount) {
+  const map = db.get(K_PLAN) || {};
+  if (!map[userId] || amount <= 0) return;
+  map[userId].joinsUsed = (map[userId].joinsUsed || 0) + amount;
+  db.set(K_PLAN, map);
+}
+
 function ensure(userId) {
   if (getUser(userId)) return getUser(userId);
   setUser(userId, cfg.DEFAULT_TIER, cfg.TIERS[cfg.DEFAULT_TIER].days);
@@ -154,5 +161,5 @@ module.exports = {
   tier, getUser, setUser, revoke, consume,
   balance, addBalance, spend,
   createOrder, getOrder, setOrderStatus,
-  makeKeys, redeemKey, refundRun, ensure,
+  makeKeys, redeemKey, refundRun, ensure, addJoins,
 };

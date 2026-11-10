@@ -1,27 +1,20 @@
 const db = require('./index');
-const plans = require('../config/plans');
 
 const KEY = 'authUsers';
 const MAX_FAILS = 3;
-const COOLDOWN_MS = 8 * 60 * 60 * 1000; // 8h — token ko dobara use se pehle rest
+const COOLDOWN_MS = 8 * 60 * 60 * 1000;
 
-function all() {
-  return db.get(KEY) || [];
-}
-function save(list) {
-  db.set(KEY, list);
-}
-function get(userId) {
-  return all().find((e) => e.userID === userId) || null;
-}
-function has(userId) {
-  return Boolean(get(userId));
-}
+function all() { return db.get(KEY) || []; }
+function save(list) { db.set(KEY, list); }
+function get(userId) { return all().find((e) => e.userID === userId) || null; }
+function has(userId) { return Boolean(get(userId)); }
 
 function add(entry) {
   const list = all();
   const idx = list.findIndex((e) => e.userID === entry.userID);
   const now = Date.now();
+  const prev = idx >= 0 ? list[idx] : null;
+
   const record = {
     userID: entry.userID,
     username: entry.username || `user-${entry.userID}`,
@@ -29,22 +22,21 @@ function add(entry) {
     access_token: entry.access_token,
     refresh_token: entry.refresh_token || null,
     addedBy: entry.addedBy || null,
-    addedAt: now,
-    tokenIssuedAt: entry.tokenIssuedAt || now,
-    status: 'ready',            // ready | cooldown | dead | banned
+    addedAt: prev?.addedAt || now,
+    tokenIssuedAt: now,
+    status: 'ready',
     fails: 0,
-    usedCount: 0,
-    lastUsedAt: 0,
-    lastCheckedAt: 0,
+    usedCount: prev?.usedCount || 0,
+    lastUsedAt: prev?.lastUsedAt || 0,
+    lastCheckedAt: now,
     cooldownUntil: 0,
-    onlined: false,
+    onlined: prev?.onlined || false,
     note: null,
   };
-  if (idx >= 0) {
-    list[idx] = { ...list[idx], ...record, usedCount: list[idx].usedCount || 0, addedAt: list[idx].addedAt || now };
-  } else {
-    list.push(record);
-  }
+
+  if (idx >= 0) list[idx] = record;
+  else list.push(record);
+
   save(list);
   return record;
 }
@@ -66,14 +58,20 @@ function patch(userId, changes) {
   return entry;
 }
 
-function markReady(userId, token) {
+/** cooldown ko chhedta nahi */
+function markChecked(userId, token) {
+  const entry = get(userId);
+  if (!entry) return null;
+  const cooling = entry.status === 'cooldown' && (entry.cooldownUntil || 0) > Date.now();
   return patch(userId, {
-    status: 'ready',
+    status: cooling ? 'cooldown' : 'ready',
     fails: 0,
     lastCheckedAt: Date.now(),
     ...(token ? { access_token: token, tokenIssuedAt: Date.now() } : {}),
   });
 }
+
+const markReady = markChecked;
 
 function markDead(userId, reason) {
   return patch(userId, { status: 'dead', note: reason || 'invalid_token', onlined: false });
@@ -98,7 +96,6 @@ function markFailed(userId, reason) {
   return patch(userId, { fails, note: reason || 'join_failed' });
 }
 
-/** cooldowns expire lazily */
 function normalize() {
   const now = Date.now();
   let changed = false;
@@ -113,7 +110,6 @@ function normalize() {
   if (changed) save(list);
 }
 
-/** pick best tokens: ready only, least used first, then oldest used */
 function pick(count, { exclude = [] } = {}) {
   normalize();
   const excluded = new Set(exclude);
@@ -143,6 +139,6 @@ function stats() {
 
 module.exports = {
   all, get, has, add, remove, patch,
-  markReady, markDead, markUsed, markFailed,
+  markReady, markChecked, markDead, markUsed, markFailed,
   pick, stats, normalize, COOLDOWN_MS,
 };

@@ -25,6 +25,8 @@ module.exports = {
 
   commandChannels: fileConfig.commandChannels || {},
   addBotChannelId: process.env.ADD_BOT_CHANNEL_ID || fileConfig.addBotChannelId || null,
+  commandChannels: fileConfig.commandChannels || {},
+  commandCooldowns: fileConfig.commandCooldowns || { djoin: 30 },
   staffLogChannelId: process.env.STAFF_LOG_CHANNEL_ID || fileConfig.staffLogChannelId || null,
   adminRoleId: process.env.ADMIN_ROLE_ID || fileConfig.adminRoleId || null,
 
