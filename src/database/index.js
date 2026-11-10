@@ -44,11 +44,10 @@ function backup() {
   try {
     if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    fs.copyFileSync(dbPath, path.join(backupDir, stamp + '.json'));
-    const kept = fs.readdirSync(backupDir).sort().slice(-5);
-    for (const file of fs.readdirSync(backupDir)) {
-      if (!kept.includes(file)) fs.unlinkSync(path.join(backupDir, file));
-    }
+    fs.copyFileSync(dbPath, path.join(backupDir, `${stamp}.json`));
+
+    const files = fs.readdirSync(backupDir).filter((f) => f.endsWith('.json')).sort();
+    for (const file of files.slice(0, -5)) fs.unlinkSync(path.join(backupDir, file));
   } catch (error) {
     console.error('[db] backup failed:', error.message);
   }
@@ -58,7 +57,7 @@ setInterval(flush, 1500).unref();
 setInterval(backup, 15 * 60 * 1000).unref();
 process.on('exit', flush);
 for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, () => { flush(); process.exit(0); });
+  process.on(sig, flush);
 }
 
 module.exports = {
@@ -92,4 +91,5 @@ module.exports = {
     return Object.keys(load());
   },
   flush,
-  ba
+  backup,
+};

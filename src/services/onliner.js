@@ -5,83 +5,90 @@ const health = require('./tokenHealth');
 const { createLogger } = require('../utils/logger');
 
 const logger = createLogger();
-const sessions = new Map(); // userId -> { session, timers, token }
+const sessions = new Map();
 
 const STATUSES = ['online', 'online', 'online', 'idle', 'dnd'];
 const ACTIVITIES = [
   { type: 0, name: 'Visual Studio Code' },
   { type: 0, name: 'Valorant' },
   { type: 3, name: 'lofi beats' },
-  { type: 2, name: 'Spotify' },
   { type: 0, name: 'Minecraft' },
   { type: 1, name: 'a stream' },
   { type: 0, name: 'Discord' },
 ];
 
-const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const pick = (a) => a[Math.floor(Math.random() * a.length)];
 const rnd = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 
-const api = (token) => axios.create({
+const rest = (token) => axios.create({
   baseURL: 'https://discord.com/api/v10',
   headers: { authorization: token, 'user-agent': 'Mozilla/5.0' },
-  timeout: 15000,
+  timeout: 20000,
   validateStatus: () => true,
 });
 
-/** presence ko random intervals pe ghumaо — insaan jaisa */
-function startHumanizedPresence(userId, session) {
+function humanizePresence(session) {
   const timers = [];
   const tick = () => {
-    const status = pick(STATUSES);
-    const useActivity = Math.random() > 0.25;
     session.setPresence({
-      status,
-      activities: useActivity ? [pick(ACTIVITIES)] : [],
+      status: pick(STATUSES),
+      activities: Math.random() > 0.25 ? [pick(ACTIVITIES)] : [],
     });
-    timers.push(setTimeout(tick, rnd(180000, 900000))); // 3-15 min
+    timers.push(setTimeout(tick, rnd(180000, 900000)));
   };
-  timers.push(setTimeout(tick, rnd(2000, 20000)));
+  timers.push(setTimeout(tick, rnd(3000, 25000)));
   return timers;
 }
 
 async function setAvatar(token, imageUrl) {
   const res = await axios.get(imageUrl, { responseType: 'arraybuffer' });
   const b64 = Buffer.from(res.data).toString('base64');
-  return api(token).patch('/users/@me', { avatar: `data:image/png;base64,${b64}` });
+  return rest(token).patch('/users/@me', { avatar: `data:image/png;base64,${b64}` });
 }
 
 async function setBio(token, bio) {
-  return api(token).patch('/users/@me', { bio });
+  return rest(token).patch('/users/@me', { bio });
 }
 
-async function start(userId, { humanize = true } = {}) {
-  if (sessions.has(userId)) return { ok: true, already: true };
+function start(userId, { humanize = true } = {}) {
+  if (sessions.has(userId)) return Promise.resolve({ ok: true, already: true });
 
   const entry = stock.get(userId);
-  if (!entry) return { ok: false, reason: 'not_in_stock' };
+  if (!entry) return Promise.resolve({ ok: false, reason: 'not_in_stock' });
 
-  const token = await health.ensure(entry);
-  if (!token) return { ok: false, reason: 'dead_token' };
+  return health.ensure(entry).then((token) => {
+    if (!token) return { ok: false, reason: 'dead_token' };
 
-  const session = new Session(token, {
-    onReady: () => {
-      stock.patch(userId, { onlined: true });
-      logger.info(`[onliner] ${userId} online`);
-    },
-    onClose: (code) => {
-      if (code === 4004) {
-        stock.markDead(userId, 'gateway_auth_failed');
-        sessions.delete(userId);
-      }
-    },
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+
+      const session = new Session(token, {
+        onReady: () => {
+          stock.patch(userId, { onlined: true });
+          logger.info(`[onliner] ${userId} online`);
+          finish({ ok: true });
+        },
+        onFatal: (code) => {
+          stock.markDead(userId, `gateway_${code}`);
+          sessions.delete(userId);
+          finish({ ok: false, reason: `fatal_${code}` });
+        },
+      });
+
+      const record = { session, token, timers: [] };
+      if (humanize) record.timers = humanizePresence(session);
+
+      sessions.set(userId, record);
+      session.connect();
+
+      setTimeout(() => finish({ ok: false, reason: 'timeout' }), 25000);
+    });
   });
-
-  const record = { session, token, timers: [] };
-  if (humanize) record.timers = startHumanizedPresence(userId, session);
-
-  sessions.set(userId, record);
-  session.connect();
-  return { ok: true };
 }
 
 function stop(userId) {
@@ -95,35 +102,32 @@ function stop(userId) {
 }
 
 function stopAll() {
-  for (const userId of [...sessions.keys()]) stop(userId);
+  for (const id of [...sessions.keys()]) stop(id);
 }
 
-function isOnline(userId) {
-  return sessions.has(userId);
-}
+const isOnline = (userId) => sessions.has(userId);
+const sessionOf = (userId) => sessions.get(userId) || null;
+const onlineCount = () => sessions.size;
 
-function sessionOf(userId) {
-  return sessions.get(userId) || null;
-}
-
-/** token expiry se pehle rotate */
+/** rotation: collect targets pehle, phir ek-ek karke restart */
 function startTokenRotation() {
   setInterval(async () => {
-    for (const [userId, record] of sessions) {
-      const fresh = await health.refresh(stock.get(userId) || {});
+    const targets = [...sessions.keys()];
+    for (const userId of targets) {
+      const entry = stock.get(userId);
+      if (!entry) { stop(userId); continue; }
+      const fresh = await health.refresh(entry);
       if (!fresh) continue;
-      record.token = fresh;
       stop(userId);
-      setTimeout(() => start(userId), 3000);
+      await new Promise((r) => setTimeout(r, 5500));
+      await start(userId);
     }
   }, 4 * 60 * 60 * 1000).unref();
 }
 
-/** ek saath N tokens online karo, staggered (identify rate limit 1/5s) */
 async function startMany(count, opts = {}) {
-  const targets = stock.pick(count);
   const started = [];
-  for (const entry of targets) {
+  for (const entry of stock.pick(count)) {
     const out = await start(entry.userID, opts);
     if (out.ok) started.push(entry.userID);
     await new Promise((r) => setTimeout(r, 5500));
@@ -132,7 +136,6 @@ async function startMany(count, opts = {}) {
 }
 
 module.exports = {
-  start, stop, stopAll, isOnline, sessionOf,
+  start, stop, stopAll, isOnline, sessionOf, onlineCount,
   setAvatar, setBio, startMany, startTokenRotation,
-  onlineCount: () => sessions.size,
 };

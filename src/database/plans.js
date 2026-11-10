@@ -137,9 +137,16 @@ function redeemKey(key, userId) {
   return { ok: true, tier: entry.tier, days: entry.days };
 }
 
+function refundRun(userId) {
+  const map = db.get(K_PLAN) || {};
+  if (!map[userId]) return;
+  map[userId].runsUsed = Math.max(0, (map[userId].runsUsed || 1) - 1);
+  db.set(K_PLAN, map);
+}
+
 module.exports = {
   tier, getUser, setUser, revoke, consume,
   balance, addBalance, spend,
   createOrder, getOrder, setOrderStatus,
-  makeKeys, redeemKey,
+  makeKeys, redeemKey, refundRun,
 };

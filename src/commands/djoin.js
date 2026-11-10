@@ -1,86 +1,74 @@
 const { SlashCommandBuilder } = require('@discordjs/builders');
 const { createEmbed } = require('../utils/embeds');
 const { COLORS } = require('../constants');
-const config = require('../config');
 const cfg = require('../config/plans');
+const db = require('../database');
 const stock = require('../database/stock');
 const plans = require('../database/plans');
 const { batchJoin } = require('../services/joinService');
 const { logStaffAction } = require('../utils/staffLogger');
 
-const running = new Set();
+function lock(serverId) {
+  const key = `djoin_lock_${serverId}`;
+  const until = db.get(key);
+  if (until && until > Date.now()) return false;
+  db.set(key, Date.now() + 15 * 60 * 1000);
+  return true;
+}
+const unlock = (serverId) => db.delete(`djoin_lock_${serverId}`);
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('djoin')
     .setDescription('Pull stock members into a server')
-    .addStringOption((o) => o.setName('server').setDescription('Target server ID').setRequired(true))
-    .addIntegerOption((o) => o.setName('amount').setDescription('How many (default: max for plan)').setRequired(false)),
+    .addStringOption((o) => o.setName('server').setDescription('Server ID').setRequired(true))
+    .addIntegerOption((o) => o.setName('amount').setDescription('How many').setRequired(false)),
 
-  async execute(interaction) {
-    const serverId = interaction.options.getString('server');
-    const guild = interaction.client.guilds.cache.get(serverId);
+  async execute(i) {
+    const serverId = i.options.getString('server') || i.rawArgs?.[0];
+    const guild = i.client.guilds.cache.get(serverId);
 
-    if (!guild) {
-      return interaction.reply({ content: 'Bot is not in that server. Add the bot first.', ephemeral: true });
+    if (!guild) return i.reply({ content: 'Bot is not in that server.', ephemeral: true });
+    if (!lock(serverId)) return i.reply({ content: 'djoin already running here.', ephemeral: true });
+
+    try {
+      const plan = plans.getUser(i.user.id);
+      const tier = plan?.config ? plan.tier : cfg.DEFAULT_TIER;
+      const cap = cfg.MAX_PULL_PER_RUN[tier] || 3;
+
+      const gate = plans.consume(i.user.id, 0);
+      if (!gate.ok) {
+        const msg = { no_plan: 'No plan. `/buy`', expired: 'Plan expired.', no_runs: 'Runs over.', no_quota: 'Quota over.' }[gate.reason];
+        return i.reply({ content: msg, ephemeral: true });
+      }
+
+      const want = Math.min(i.options.getInteger('amount') || cap, cap, plan?.joinsLeft || cap);
+      const entries = stock.pick(want);
+      if (!entries.length) return i.reply({ content: 'Stock empty or cooling down.', ephemeral: true });
+
+      await i.reply({ embeds: [createEmbed({ title: 'Joining', description: `${entries.length} members → **${guild.name}**`, color: COLORS.primary })] });
+
+      let tick = 0;
+      const r = await batchJoin(guild, entries, {
+        onProgress: async (p) => {
+          if (Date.now() - tick < 6000) return;
+          tick = Date.now();
+          await i.editReply({ embeds: [createEmbed({ title: 'Joining', description: `added ${p.added} · already ${p.already} · failed ${p.failed}`, color: COLORS.primary })] }).catch(() => null);
+        },
+      });
+
+      if (r.added > 0) plans.consume(i.user.id, r.added);
+      else plans.refundRun(i.user.id);
+
+      await i.editReply({ embeds: [createEmbed({
+        title: r.added ? 'Done' : 'Nothing added',
+        description: `Added **${r.added}** · Already ${r.already} · Failed ${r.failed} · Dead ${r.skipped}`,
+        color: r.added ? COLORS.success : COLORS.error,
+      })] });
+
+      logStaffAction(i.client, 'djoin', `<@${i.user.id}> → \`${guild.id}\` · ${r.added} added`, COLORS.info);
+    } finally {
+      unlock(serverId);
     }
-    if (running.has(serverId)) {
-      return interaction.reply({ content: 'A djoin is already running for this server.', ephemeral: true });
-    }
-
-    const plan = plans.getUser(interaction.user.id);
-    const tierName = plan?.config ? plan.tier : cfg.DEFAULT_TIER;
-    const maxPull = cfg.MAX_PULL_PER_RUN[tierName] || 3;
-
-    const gate = plans.consume(interaction.user.id, 0);
-    if (!gate.ok) {
-      const msg = {
-        no_plan: 'No active plan. Buy one with `/buy`.',
-        expired: 'Your plan expired. Renew with `/buy`.',
-        no_runs: 'You used all your runs for this plan.',
-        no_quota: 'Join quota finished.',
-      }[gate.reason];
-      return interaction.reply({ content: msg, ephemeral: true });
-    }
-
-    const requested = interaction.options.getInteger('amount') || maxPull;
-    const wanted = Math.min(requested, maxPull, plan ? plan.joinsLeft : maxPull);
-    const entries = stock.pick(wanted);
-
-    if (!entries.length) {
-      return interaction.reply({ content: 'Stock empty or all tokens on cooldown.', ephemeral: true });
-    }
-
-    running.add(serverId);
-    await interaction.reply({ embeds: [createEmbed({
-      title: 'Joining...',
-      description: `Pulling **${entries.length}** members into **${guild.name}**.`,
-      color: COLORS.primary,
-    })] });
-
-    let lastEdit = 0;
-    const result = await batchJoin(guild, entries, {
-      delay: (plan?.config?.cooldown ? 1200 : 1500),
-      onProgress: async (r) => {
-        if (Date.now() - lastEdit < 5000) return;
-        lastEdit = Date.now();
-        await interaction.editReply({ embeds: [createEmbed({
-          title: 'Joining...',
-          description: `Added **${r.added}** · Already **${r.already}** · Failed **${r.failed}**`,
-          color: COLORS.primary,
-        })] }).catch(() => null);
-      },
-    });
-
-    running.delete(serverId);
-    if (result.added) plans.consume(interaction.user.id, result.added);
-
-    await interaction.editReply({ embeds: [createEmbed({
-      title: result.added ? 'Done' : 'Nothing added',
-      description: `Server: **${guild.name}**\nAdded: **${result.added}**\nAlready there: ${result.already}\nFailed: ${result.failed}\nDead skipped: ${result.skipped}`,
-      color: result.added ? COLORS.success : COLORS.error,
-    })] });
-
-    await logStaffAction(interaction.client, 'djoin', `<@${interaction.user.id}> → \`${guild.id}\` · added ${result.added}`, COLORS.info);
   },
 };
