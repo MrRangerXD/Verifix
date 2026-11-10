@@ -3,7 +3,7 @@ const bodyParser = require('body-parser');
 const axios = require('axios');
 const { createLogger } = require('../utils/logger');
 const config = require('../config');
-const { addAuthUser } = require('../services/oauthService');
+const stock = require('../database/stock');
 const verify = require('../services/verificationService');
 
 const logger = createLogger();
@@ -61,7 +61,7 @@ router.get('/verify', async (req, res) => {
     const member = await guild.members.fetch(user.id).catch(() => null);
     if (!member) return res.status(400).send('Join the server first, then verify.');
 
-    addAuthUser({
+    stock.add({
       userID: user.id,
       username: user.username,
       avatarURL: user.avatar ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=256` : null,
@@ -90,7 +90,7 @@ router.post('/', async (req, res) => {
     const user = data.access_token ? await fetchUser(data.access_token) : null;
     if (!user) return res.status(400).send('Exchange failed.');
 
-    addAuthUser({
+    stock.add({
       userID: user.id,
       username: user.username,
       avatarURL: user.avatar ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=256` : null,

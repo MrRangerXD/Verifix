@@ -8,6 +8,11 @@ module.exports = {
 
   /** per-user plan defaults */
   TIERS: {
+    FREE: {
+      label: 'Free', price: 0, days: 7,
+      joinsQuota: 5, runs: 3, cooldown: 30,
+      priority: 0, onlinerSlots: 0, humanizer: false, brain: false,
+    },
     BRONZE: {
       label: 'Bronze', price: 49, days: 7,
       joinsQuota: 100, runs: 3, cooldown: 30,
@@ -36,13 +41,13 @@ module.exports = {
   },
 
   /** default plan for new/unauth users */
-  DEFAULT_TIER: 'BRONZE',
+  DEFAULT_TIER: 'FREE',
 
   /** payment methods shown in /buy */
   METHODS: ['wallet', 'upi', 'crypto', 'paypal'],
 
   /** how many tokens one djoin run may pull at once, per tier */
   MAX_PULL_PER_RUN: {
-    BRONZE: 3, SILVER: 10, GOLD: 20, PLATINUM: 35, DIAMOND: 50,
+    FREE: 3, BRONZE: 5, SILVER: 10, GOLD: 20, PLATINUM: 35, DIAMOND: 50,
   },
 };

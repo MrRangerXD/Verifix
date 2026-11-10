@@ -32,7 +32,7 @@ module.exports = {
     if (!lock(serverId)) return i.reply({ content: 'djoin already running here.', ephemeral: true });
 
     try {
-      const plan = plans.getUser(i.user.id);
+      const plan = plans.ensure(i.user.id);
       const tier = plan?.config ? plan.tier : cfg.DEFAULT_TIER;
       const cap = cfg.MAX_PULL_PER_RUN[tier] || 3;
 

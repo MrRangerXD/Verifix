@@ -144,9 +144,15 @@ function refundRun(userId) {
   db.set(K_PLAN, map);
 }
 
+function ensure(userId) {
+  if (getUser(userId)) return getUser(userId);
+  setUser(userId, cfg.DEFAULT_TIER, cfg.TIERS[cfg.DEFAULT_TIER].days);
+  return getUser(userId);
+}
+
 module.exports = {
   tier, getUser, setUser, revoke, consume,
   balance, addBalance, spend,
   createOrder, getOrder, setOrderStatus,
-  makeKeys, redeemKey, refundRun,
+  makeKeys, redeemKey, refundRun, ensure,
 };
