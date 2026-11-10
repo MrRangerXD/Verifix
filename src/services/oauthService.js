@@ -69,38 +69,6 @@ function refreshSessionUsage(userID) {
   return true;
 }
 
-async function refreshAccessToken(userID) {
-  const authData = readAuthData();
-  const session = authData.find((entry) => entry.userID === userID);
-  if (!session || !session.refresh_token) return null;
-
-  const form = new FormData();
-  form.append('client_id', config.clientId);
-  form.append('client_secret', config.clientSecret);
-  form.append('grant_type', 'refresh_token');
-  form.append('refresh_token', session.refresh_token);
-
-  try {
-    const response = await fetch(config.tokenUrl, { method: 'POST', body: form });
-    const data = await response.json();
-    if (!data || data.error || !data.access_token) {
-      return null;
-    }
-
-    session.access_token = data.access_token;
-    if (data.refresh_token) {
-      session.refresh_token = data.refresh_token;
-    }
-    session.updatedAt = Date.now();
-    session.status = 'ready';
-    writeAuthData(authData);
-    return session;
-  } catch (error) {
-    console.error('refreshAccessToken failed:', error);
-    return null;
-  }
-}
-
 function addAuthUser(userData) {
   try {
     const existing = readAuthData();
