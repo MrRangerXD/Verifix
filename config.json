@@ -1,0 +1,15 @@
+{
+  "prefix": "!",
+  "commandChannels": {
+    "auth": "1525750815451512912",
+    "get_token": "1525750815451512912",
+    "djoin": "1525745930752753687"
+  },
+  "addBotChannelId": "1525745926822564112",
+  "staffLogChannelId": "1525760114525732944",
+  "adminRoleId": "1525753121350090887",
+  "commandCooldowns": {
+    "djoin": 30
+  },
+  "brandingColor": 3066993
+}

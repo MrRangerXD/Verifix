@@ -1,0 +1,26 @@
+{
+  "cooldown_djoin_1408851223834132564": 1783847048711,
+  "session_1408851223834132564": {
+    "user_id": "1408851223834132564",
+    "plan": "DIAMOND",
+    "expiry_time": 1783847605398,
+    "token": "NQFoHDgDELhPetlviYo5im4AFpuJdv"
+  },
+  "verified_1408851223834132564": true,
+  "plan_1408851223834132564": "DIAMOND",
+  "session_1375177724422914090": {
+    "user_id": "1375177724422914090",
+    "plan": "BRONZE",
+    "expiry_time": 1783844153769,
+    "token": "XMEUy7QWG2VfRj20cYjlpbrqPyZWhp"
+  },
+  "verified_1375177724422914090": true,
+  "verify_setup_1512336007242977321": {
+    "guildId": "1512336007242977321",
+    "channelId": "1525749259079647314",
+    "roleId": "1526140236076421240",
+    "createdBy": "1408851223834132564",
+    "createdAt": 1783932350547,
+    "token": "1dcab9ddaeec834acee381eb7275ea1b544b"
+  }
+}
